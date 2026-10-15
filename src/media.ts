@@ -91,17 +91,28 @@ export async function calculateSsimBetweenFrames(
   firstFrame: number | "last",
   secondFrame: number | "last",
 ): Promise<number | null> {
+  return calculateSsimBetweenVideoFrames(videoPath, firstFrame, videoPath, secondFrame);
+}
+
+export async function calculateSsimBetweenVideoFrames(
+  firstVideoPath: string,
+  firstFrame: number | "last",
+  secondVideoPath: string,
+  secondFrame: number | "last",
+): Promise<number | null> {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "pet-benchmark-"));
   const firstPath = path.join(tempDir, "first.png");
   const secondPath = path.join(tempDir, "second.png");
   try {
-    const extract = async (frame: number | "last", outputPath: string) => {
-      const inputArgs = frame === "last" ? ["-sseof", "-1", "-i", videoPath] : ["-i", videoPath];
-      const filterArgs = frame === "last" ? ["-vf", "reverse"] : ["-vf", `select=eq(n\\,${frame})`];
+    const extract = async (videoPath: string, frame: number | "last", outputPath: string) => {
+      const inputArgs = ["-i", videoPath];
+      const filterArgs = frame === "last"
+        ? ["-vf", "reverse,select=eq(n\\,0)"]
+        : ["-vf", `select=eq(n\\,${frame})`];
       await runFfmpeg(["-y", ...inputArgs, ...filterArgs, "-frames:v", "1", outputPath]);
     };
-    await extract(firstFrame, firstPath);
-    await extract(secondFrame, secondPath);
+    await extract(firstVideoPath, firstFrame, firstPath);
+    await extract(secondVideoPath, secondFrame, secondPath);
     const output = await runFfmpeg([
       "-i", firstPath,
       "-i", secondPath,
@@ -114,6 +125,16 @@ export async function calculateSsimBetweenFrames(
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+}
+
+export async function calculateAverageConsecutiveSsim(videoPath: string, frameRate: number): Promise<number | null> {
+  const frameCount = await getVideoFrameCount(videoPath, frameRate);
+  if (frameCount < 2) return null;
+  const normalize = `fps=${frameRate},scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:-1:-1,setsar=1,format=yuv420p,settb=AVTB`;
+  const graph = `[0:v]${normalize},split=2[early][late];[early]trim=end_frame=${frameCount - 1},setpts=PTS-STARTPTS[first];[late]trim=start_frame=1,setpts=PTS-STARTPTS[second];[first][second]ssim`;
+  const output = await runFfmpeg(["-i", videoPath, "-filter_complex", graph, "-f", "null", "-"]);
+  const matches = [...output.matchAll(/All:([0-9.]+)/g)];
+  return matches.length ? Number(matches.at(-1)![1]) : null;
 }
 
 export async function calculateEndpointSsim(videoPath: string): Promise<number | null> {
