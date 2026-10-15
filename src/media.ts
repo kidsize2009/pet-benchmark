@@ -32,13 +32,16 @@ export async function cropToPortrait(
 
 function runFfmpeg(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    const process = spawn(ffmpegBinary, args, { windowsHide: true });
+    const child = spawn(ffmpegBinary, args, { windowsHide: true });
+    let stdout = "";
     let stderr = "";
-    process.stderr.setEncoding("utf8");
-    process.stderr.on("data", (chunk: string) => (stderr += chunk));
-    process.on("error", reject);
-    process.on("close", (code) => {
-      if (code === 0) resolve(stderr);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => (stdout += chunk));
+    child.stderr.on("data", (chunk: string) => (stderr += chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(`${stdout}\n${stderr}`);
       else reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(-1600)}`));
     });
   });
