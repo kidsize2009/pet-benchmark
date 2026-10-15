@@ -8,11 +8,12 @@ import { fileURLToPath } from "node:url";
 import { models, type ModelConfig } from "../models.js";
 import { presets, type PresetName } from "../presets.js";
 import { calculateEndpointSsim, cropToPortrait, downloadFile, makeThreeSecondClip, readFocusFile, verifyFfmpeg } from "./media.js";
+import { extractVideoUrl } from "./fal-result.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const reportColumns = ["photo", "model", "preset", "loop", "seconds_generated", "cost_usd", "latency_s", "success", "error", "ssim_first_last", "output_path"];
+const reportColumns = ["photo", "model", "preset", "loop", "seconds_generated", "cost_usd", "latency_s", "success", "error", "ssim_first_last", "output_path", "request_id"];
 const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".bmp"]);
-type CliOptions = { photos: string; out: string; limit?: number; concurrency: number; preset: PresetName; dryRun: boolean; yes: boolean; loop: boolean; maxUsd?: number };
+type CliOptions = { photos: string; out: string; limit?: number; concurrency: number; preset: PresetName; dryRun: boolean; yes: boolean; loop: boolean; maxUsd?: number; modelIds?: string[] };
 type Job = { photo: string; photoPath: string; model: ModelConfig; preset: PresetName; loop: boolean; generatedSeconds: number; cost: number; outputPath: string; relativeOutputPath: string };
 type ReportRow = Record<string, string>;
 
@@ -29,6 +30,10 @@ function parseArgs(args: string[]): CliOptions {
     else if (arg === "--out") options.out = value();
     else if (arg === "--limit") options.limit = positiveInteger(value(), "--limit");
     else if (arg === "--concurrency") options.concurrency = positiveInteger(value(), "--concurrency");
+    else if (arg === "--models") {
+      options.modelIds = value().split(",").map((modelId) => modelId.trim()).filter(Boolean);
+      if (options.modelIds.length === 0) throw new Error("--models must contain at least one model id");
+    }
     else if (arg === "--preset") {
       const selected = value();
       if (!(selected in presets)) throw new Error(`Unknown preset ${selected}. Choose: ${Object.keys(presets).join(", ")}`);
@@ -38,7 +43,7 @@ function parseArgs(args: string[]): CliOptions {
     else if (arg === "--yes") options.yes = true;
     else if (arg === "--loop") options.loop = true;
     else if (arg === "--help" || arg === "-h") {
-      console.log("Usage: npm run benchmark -- [--photos DIR] [--out DIR] [--limit N] [--preset NAME] [--loop] [--concurrency N] [--dry-run | --yes] [--max-usd X]");
+      console.log("Usage: npm run benchmark -- [--photos DIR] [--out DIR] [--limit N] [--models ID,ID] [--preset NAME] [--loop] [--concurrency N] [--dry-run | --yes] [--max-usd X]");
       process.exit(0);
     } else throw new Error(`Unknown option: ${arg}`);
   }
@@ -135,19 +140,31 @@ async function runJob(job: Job, imageUrl: string, apiKey: string): Promise<Repor
     error: "",
     ssim_first_last: "",
     output_path: job.relativeOutputPath,
+    request_id: "",
   };
   try {
+    let lastLoggedStatus: string | undefined;
+    let lastLoggedAt = 0;
     const result = await fal.subscribe(job.model.endpoint, {
       input: buildInput(job, imageUrl),
       logs: false,
       onQueueUpdate(update) {
-        if (update.status === "IN_QUEUE" || update.status === "IN_PROGRESS") {
+        const status = update.status;
+        const now = Date.now();
+        if (status !== lastLoggedStatus && now - lastLoggedAt >= 30_000) {
           console.log(`  ${job.photo} / ${job.model.id} / ${job.preset}${job.loop ? " / loop" : ""}: ${update.status}`);
+          lastLoggedAt = now;
+          lastLoggedStatus = status;
         }
       },
-    }) as { video?: { url?: string } };
-    if (!result.video?.url) throw new Error("fal response did not contain video.url");
-    await downloadFile(result.video.url, rawPath);
+    });
+    row.request_id = result.requestId;
+    const rawDir = path.join(root, "out", "raw");
+    await mkdir(rawDir, { recursive: true });
+    const rawName = `${job.photo}__${job.model.id}__${job.preset}${job.loop ? "__loop" : ""}.json`;
+    await writeFile(path.join(rawDir, rawName), JSON.stringify({ requestId: result.requestId, response: result }, null, 2), "utf8");
+    const videoUrl = extractVideoUrl(result);
+    await downloadFile(videoUrl, rawPath);
     await makeThreeSecondClip(rawPath, job.outputPath);
     row.latency_s = ((Date.now() - started) / 1000).toFixed(2);
     row.success = "true";
@@ -176,7 +193,16 @@ async function main(): Promise<void> {
   loadEnv({ path: path.join(root, ".env") });
   const apiKey = process.env.FAL_KEY ?? "";
 
-  const enabledModels = models.filter((model) => model.enabled);
+  const configuredModelIds = new Set(models.map((model) => model.id));
+  const requestedModelIds = options.modelIds ? new Set(options.modelIds) : undefined;
+  for (const modelId of requestedModelIds ?? []) {
+    if (!configuredModelIds.has(modelId)) throw new Error(`Unknown model id ${modelId}. Choose: ${models.map((model) => model.id).join(", ")}`);
+  }
+  const enabledModels = models.filter((model) => model.enabled && (!requestedModelIds || requestedModelIds.has(model.id)));
+  if (requestedModelIds && enabledModels.length !== requestedModelIds.size) {
+    const disabled = [...requestedModelIds].filter((modelId) => !enabledModels.some((model) => model.id === modelId));
+    throw new Error(`Selected models are disabled: ${disabled.join(", ")}`);
+  }
   for (const model of enabledModels) {
     if (model.duration === null || model.durationValueType === null) throw new Error(`${model.id} is enabled but duration is not configured in models.ts`);
   }
@@ -253,7 +279,7 @@ async function main(): Promise<void> {
         const upload = await uploadPromise;
         if (upload.error) console.error(`  FAILED ${job.photo} / ${job.model.id}: ${redact(upload.error, apiKey)}`);
         const row = upload.error
-          ? { photo: job.photo, model: job.model.id, preset: job.preset, loop: String(job.loop), seconds_generated: String(job.generatedSeconds), cost_usd: job.cost.toFixed(6), latency_s: "0", success: "false", error: redact(upload.error, apiKey).slice(0, 1500), ssim_first_last: "", output_path: job.relativeOutputPath }
+          ? { photo: job.photo, model: job.model.id, preset: job.preset, loop: String(job.loop), seconds_generated: String(job.generatedSeconds), cost_usd: job.cost.toFixed(6), latency_s: "0", success: "false", error: redact(upload.error, apiKey).slice(0, 1500), ssim_first_last: "", output_path: job.relativeOutputPath, request_id: "" }
           : await runJob(job, upload.imageUrl!, apiKey);
         reportMap.set(jobKey(row), row);
         reportWrite = reportWrite.then(() => writeFile(path.join(outDir, "report.csv"), csvEscapeRows([...reportMap.values()]), "utf8"));

@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "benchmark": "tsx src/index.ts",
+    "recover": "tsx src/recover.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

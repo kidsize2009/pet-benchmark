@@ -43,7 +43,9 @@ Run from `tools/pet-benchmark`:
 ```powershell
 npm install
 npm run benchmark -- --dry-run --limit 2
+npm run benchmark -- --dry-run --limit 1 --models kling-o3-pro
 npm run benchmark -- --yes --limit 3 --max-usd 6
+npm run recover -- kling-o3-pro <request_id> out/recovered/result.mp4
 ```
 
 The dry run spends nothing and does not require `FAL_KEY`. Before a real run, copy `.env.example` to `.env` and set the key. `--max-usd` checks the estimated pending batch before submitting any requests; outputs already present are excluded from that estimate.
@@ -55,6 +57,7 @@ Useful options:
 --loop                            Adds same-image end-frame runs where supported
 --concurrency N                   Default: 3
 --limit N                         Process the first N photos
+--models ID,ID                    Restrict jobs to the listed model ids
 --photos DIR                      Default: photos
 --out DIR                         Default: out
 --dry-run                         Print jobs and estimate; submit nothing
@@ -63,3 +66,5 @@ Useful options:
 ```
 
 Existing output files are skipped. `report.csv` records requested generation seconds and estimated cost, latency, success/error, endpoint SSIM, and output path. `index.html` is a local static gallery; open it in a browser after a run.
+
+Completed fal responses are saved as JSON in `out/raw/` with their request IDs before the video URL is parsed. If a result was not downloaded, `npm run recover -- <model_id> <request_id> <output.mp4>` fetches the existing queue result without submitting a new generation request.
