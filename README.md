@@ -46,6 +46,7 @@ npm run benchmark -- --dry-run --limit 2
 npm run benchmark -- --dry-run --limit 1 --models kling-o3-pro
 npm run benchmark -- --yes --limit 3 --max-usd 6
 npm run recover -- kling-o3-pro <request_id> out/recovered/result.mp4
+npm run loopfix -- manual --overlap 0.5
 ```
 
 The dry run spends nothing and does not require `FAL_KEY`. Before a real run, copy `.env.example` to `.env` and set the key. `--max-usd` checks the estimated pending batch before submitting any requests; outputs already present are excluded from that estimate.

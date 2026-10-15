@@ -5,6 +5,7 @@
   "scripts": {
     "benchmark": "tsx src/index.ts",
     "recover": "tsx src/recover.ts",
+    "loopfix": "tsx src/loopfix.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

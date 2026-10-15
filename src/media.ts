@@ -72,16 +72,39 @@ export async function makeThreeSecondClip(inputPath: string, outputPath: string)
   ]);
 }
 
-export async function calculateEndpointSsim(videoPath: string): Promise<number | null> {
+export async function getVideoDurationSeconds(videoPath: string): Promise<number> {
+  const output = await runFfmpeg(["-i", videoPath, "-f", "null", "-"]);
+  const match = output.match(/Duration: (\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)/);
+  if (!match) throw new Error(`Cannot read video duration: ${videoPath}`);
+  return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]);
+}
+
+export async function getVideoFrameCount(videoPath: string, frameRate: number): Promise<number> {
+  const output = await runFfmpeg(["-i", videoPath, "-vf", `fps=${frameRate},showinfo`, "-f", "null", "-"]);
+  const frames = [...output.matchAll(/\bn:\s*(\d+)/g)];
+  if (frames.length === 0) throw new Error(`Cannot read normalized frame count: ${videoPath}`);
+  return Number(frames.at(-1)![1]) + 1;
+}
+
+export async function calculateSsimBetweenFrames(
+  videoPath: string,
+  firstFrame: number | "last",
+  secondFrame: number | "last",
+): Promise<number | null> {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "pet-benchmark-"));
   const firstPath = path.join(tempDir, "first.png");
-  const lastPath = path.join(tempDir, "last.png");
+  const secondPath = path.join(tempDir, "second.png");
   try {
-    await runFfmpeg(["-y", "-i", videoPath, "-vf", "select=eq(n\\,0)", "-frames:v", "1", firstPath]);
-    await runFfmpeg(["-y", "-i", videoPath, "-vf", "select=eq(n\\,89)", "-frames:v", "1", lastPath]);
+    const extract = async (frame: number | "last", outputPath: string) => {
+      const inputArgs = frame === "last" ? ["-sseof", "-1", "-i", videoPath] : ["-i", videoPath];
+      const filterArgs = frame === "last" ? ["-vf", "reverse"] : ["-vf", `select=eq(n\\,${frame})`];
+      await runFfmpeg(["-y", ...inputArgs, ...filterArgs, "-frames:v", "1", outputPath]);
+    };
+    await extract(firstFrame, firstPath);
+    await extract(secondFrame, secondPath);
     const output = await runFfmpeg([
       "-i", firstPath,
-      "-i", lastPath,
+      "-i", secondPath,
       "-lavfi", "ssim",
       "-f", "null",
       "-",
@@ -91,6 +114,10 @@ export async function calculateEndpointSsim(videoPath: string): Promise<number |
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+}
+
+export async function calculateEndpointSsim(videoPath: string): Promise<number | null> {
+  return calculateSsimBetweenFrames(videoPath, 0, 89);
 }
 
 export async function downloadFile(url: string, destination: string): Promise<void> {
