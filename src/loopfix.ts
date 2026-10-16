@@ -62,7 +62,7 @@ async function makeThreeLoopPreview(input: string, output: string): Promise<void
   await runFfmpeg(["-y", "-stream_loop", "2", "-i", input, "-an", "-c", "copy", "-movflags", "+faststart", output]);
 }
 
-async function makePingpong(input: string, output: string, frameCount: number): Promise<void> {
+export async function makePingpong(input: string, output: string, frameCount: number): Promise<void> {
   const normalize = `fps=${frameRate},scale=${targetSize}:force_original_aspect_ratio=decrease,pad=${targetSize}:-1:-1,setsar=1,format=yuv420p,settb=AVTB,setpts=PTS-STARTPTS`;
   const graph = `[0:v]${normalize},split=2[forward][reverseSrc];[reverseSrc]reverse,setpts=PTS-STARTPTS,trim=start_frame=1:end_frame=${frameCount - 1},setpts=PTS-STARTPTS,settb=AVTB[backward];[forward]settb=AVTB[forwardNorm];[forwardNorm][backward]concat=n=2:v=1:a=0,fps=${frameRate},setpts=PTS-STARTPTS[out]`;
   await runFfmpeg(["-y", "-i", input, "-filter_complex", graph, "-map", "[out]", "-an", "-r", String(frameRate), "-fps_mode", "cfr", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", output]);
@@ -131,7 +131,9 @@ async function main(): Promise<void> {
   console.log(`Gallery: ${path.join(outputDir, "index.html")}`);
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

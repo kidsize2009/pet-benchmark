@@ -13,6 +13,16 @@ export type ModelConfig = {
 
 export const models: ModelConfig[] = [
   {
+    id: "kling-o3-standard",
+    endpoint: "fal-ai/kling-video/o3/standard/image-to-video",
+    enabled: true,
+    pricePerSecond: 0.084,
+    duration: 4,
+    durationValueType: "string",
+    generateAudio: false,
+    supportsEndFrame: true,
+  },
+  {
     id: "kling-o3-pro",
     endpoint: "fal-ai/kling-video/o3/pro/image-to-video",
     enabled: true,
@@ -36,7 +46,7 @@ export const models: ModelConfig[] = [
     id: "seedance-2",
     endpoint: "bytedance/seedance-2.0/image-to-video",
     enabled: true,
-    pricePerSecond: 0.3034,
+    pricePerSecond: 0.3024,
     duration: 4,
     durationValueType: "string",
     resolution: "720p",

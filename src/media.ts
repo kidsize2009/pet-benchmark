@@ -57,19 +57,28 @@ export async function verifyFfmpeg(): Promise<void> {
   }
 }
 
-export async function makeThreeSecondClip(inputPath: string, outputPath: string): Promise<void> {
+export async function makeClip(
+  inputPath: string,
+  outputPath: string,
+  durationSeconds: number,
+): Promise<void> {
+  const frameCount = durationSeconds * 30;
   await runFfmpeg([
     "-y",
     "-i", inputPath,
     "-an",
-    "-vf", "fps=30,tpad=stop_mode=clone:stop_duration=3,trim=end_frame=90,setpts=PTS-STARTPTS",
-    "-frames:v", "90",
-    "-t", "3",
+    "-vf", `fps=30,tpad=stop_mode=clone:stop_duration=${durationSeconds},trim=end_frame=${frameCount},setpts=PTS-STARTPTS`,
+    "-frames:v", String(frameCount),
+    "-t", String(durationSeconds),
     "-c:v", "libx264",
     "-pix_fmt", "yuv420p",
     "-movflags", "+faststart",
     outputPath,
   ]);
+}
+
+export async function makeThreeSecondClip(inputPath: string, outputPath: string): Promise<void> {
+  await makeClip(inputPath, outputPath, 3);
 }
 
 export async function getVideoDurationSeconds(videoPath: string): Promise<number> {

@@ -20,5 +20,9 @@
     "@types/node": "^22.13.4",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "ffmpeg-static@5.3.0": true
   }
 }

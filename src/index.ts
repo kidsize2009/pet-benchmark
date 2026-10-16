@@ -6,19 +6,20 @@ import { readdir, readFile, writeFile, mkdir, access, rm } from "node:fs/promise
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { models, type ModelConfig } from "../models.js";
-import { presets, type PresetName } from "../presets.js";
-import { calculateEndpointSsim, cropToPortrait, downloadFile, makeThreeSecondClip, readFocusFile, verifyFfmpeg } from "./media.js";
+import { presetDurations, presets, type PresetName } from "../presets.js";
+import { calculateEndpointSsim, calculateSsimBetweenFrames, cropToPortrait, downloadFile, getVideoFrameCount, makeClip, makeThreeSecondClip, readFocusFile, verifyFfmpeg } from "./media.js";
 import { extractVideoUrl } from "./fal-result.js";
+import { makePingpong } from "./loopfix.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const reportColumns = ["photo", "model", "preset", "loop", "seconds_generated", "cost_usd", "latency_s", "success", "error", "ssim_first_last", "output_path", "request_id"];
 const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".bmp"]);
-type CliOptions = { photos: string; out: string; limit?: number; concurrency: number; preset: PresetName; dryRun: boolean; yes: boolean; loop: boolean; maxUsd?: number; modelIds?: string[] };
+type CliOptions = { photos: string; out: string; limit?: number; only?: string; concurrency: number; preset: PresetName; dryRun: boolean; yes: boolean; loop: boolean; loopOnly: boolean; maxUsd?: number; modelIds?: string[] };
 type Job = { photo: string; photoPath: string; model: ModelConfig; preset: PresetName; loop: boolean; generatedSeconds: number; cost: number; outputPath: string; relativeOutputPath: string };
 type ReportRow = Record<string, string>;
 
 function parseArgs(args: string[]): CliOptions {
-  const options: CliOptions = { photos: "photos", out: "out", concurrency: 3, preset: "subtle_life", dryRun: false, yes: false, loop: false };
+  const options: CliOptions = { photos: "photos", out: "out", concurrency: 3, preset: "subtle_life", dryRun: false, yes: false, loop: false, loopOnly: false };
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
     const value = () => {
@@ -29,6 +30,7 @@ function parseArgs(args: string[]): CliOptions {
     if (arg === "--photos") options.photos = value();
     else if (arg === "--out") options.out = value();
     else if (arg === "--limit") options.limit = positiveInteger(value(), "--limit");
+    else if (arg === "--only") options.only = value();
     else if (arg === "--concurrency") options.concurrency = positiveInteger(value(), "--concurrency");
     else if (arg === "--models") {
       options.modelIds = value().split(",").map((modelId) => modelId.trim()).filter(Boolean);
@@ -42,12 +44,14 @@ function parseArgs(args: string[]): CliOptions {
     else if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--yes") options.yes = true;
     else if (arg === "--loop") options.loop = true;
+    else if (arg === "--loop-only") options.loopOnly = true;
     else if (arg === "--help" || arg === "-h") {
-      console.log("Usage: npm run benchmark -- [--photos DIR] [--out DIR] [--limit N] [--models ID,ID] [--preset NAME] [--loop] [--concurrency N] [--dry-run | --yes] [--max-usd X]");
+      console.log("Usage: npm run benchmark -- [--photos DIR] [--out DIR] [--limit N] [--only TEXT] [--models ID,ID] [--preset NAME] [--loop [--loop-only]] [--concurrency N] [--dry-run | --yes] [--max-usd X]");
       process.exit(0);
     } else throw new Error(`Unknown option: ${arg}`);
   }
   if (options.dryRun && options.yes) throw new Error("Use either --dry-run or --yes, not both");
+  if (options.loopOnly && !options.loop) throw new Error("--loop-only requires --loop");
   return options;
 }
 
@@ -113,7 +117,7 @@ function buildInput(job: Job, imageUrl: string): Record<string, unknown> {
   if (job.model.duration === null || job.model.durationValueType === null) {
     throw new Error(`${job.model.id} is enabled but duration is not configured in models.ts`);
   }
-  input.duration = job.model.durationValueType === "string" ? String(job.model.duration) : job.model.duration;
+  input.duration = job.model.durationValueType === "string" ? String(job.generatedSeconds) : job.generatedSeconds;
   if (job.model.resolution) input.resolution = job.model.resolution;
   if (job.model.aspectRatio) input.aspect_ratio = job.model.aspectRatio;
   if (job.model.generateAudio !== undefined) input.generate_audio = job.model.generateAudio;
@@ -121,13 +125,26 @@ function buildInput(job: Job, imageUrl: string): Record<string, unknown> {
   return input;
 }
 
+function isPingpongPreset(preset: PresetName): boolean {
+  return preset.endsWith("_pp");
+}
+
 function redact(message: string, apiKey: string): string {
   return apiKey ? message.split(apiKey).join("[redacted]") : message;
+}
+
+function errorStatus(error: unknown, queueStatus?: string): string {
+  if (error !== null && typeof error === "object" && "status" in error) {
+    const status = error.status;
+    if (typeof status === "number" || typeof status === "string") return String(status);
+  }
+  return queueStatus ?? "unknown";
 }
 
 async function runJob(job: Job, imageUrl: string, apiKey: string): Promise<ReportRow> {
   const started = Date.now();
   const rawPath = `${job.outputPath}.download.mp4`;
+  const forwardPath = `${job.outputPath}.forward.mp4`;
   const row: ReportRow = {
     photo: job.photo,
     model: job.model.id,
@@ -142,6 +159,7 @@ async function runJob(job: Job, imageUrl: string, apiKey: string): Promise<Repor
     output_path: job.relativeOutputPath,
     request_id: "",
   };
+  let queueStatus: string | undefined;
   try {
     let lastLoggedStatus: string | undefined;
     let lastLoggedAt = 0;
@@ -149,6 +167,7 @@ async function runJob(job: Job, imageUrl: string, apiKey: string): Promise<Repor
       input: buildInput(job, imageUrl),
       logs: false,
       onQueueUpdate(update) {
+        queueStatus = update.status;
         const status = update.status;
         const now = Date.now();
         if (status !== lastLoggedStatus && now - lastLoggedAt >= 30_000) {
@@ -165,12 +184,22 @@ async function runJob(job: Job, imageUrl: string, apiKey: string): Promise<Repor
     await writeFile(path.join(rawDir, rawName), JSON.stringify({ requestId: result.requestId, response: result }, null, 2), "utf8");
     const videoUrl = extractVideoUrl(result);
     await downloadFile(videoUrl, rawPath);
-    await makeThreeSecondClip(rawPath, job.outputPath);
+    if (isPingpongPreset(job.preset)) {
+      await makeThreeSecondClip(rawPath, forwardPath);
+      const frameCount = await getVideoFrameCount(forwardPath, 30);
+      await makePingpong(forwardPath, job.outputPath, frameCount);
+    } else if (presetDurations[job.preset] !== undefined) {
+      await makeClip(rawPath, job.outputPath, job.generatedSeconds);
+    } else {
+      await makeThreeSecondClip(rawPath, job.outputPath);
+    }
     row.latency_s = ((Date.now() - started) / 1000).toFixed(2);
     row.success = "true";
     row.error = "";
     try {
-      const ssim = await calculateEndpointSsim(job.outputPath);
+      const ssim = isPingpongPreset(job.preset) || presetDurations[job.preset] !== undefined
+        ? await calculateSsimBetweenFrames(job.outputPath, 0, "last")
+        : await calculateEndpointSsim(job.outputPath);
       row.ssim_first_last = ssim === null ? "" : ssim.toFixed(6);
     } catch (error) {
       row.error = `SSIM failed: ${error instanceof Error ? error.message : String(error)}`.replace(/\s+/g, " ").slice(0, 1500);
@@ -178,10 +207,14 @@ async function runJob(job: Job, imageUrl: string, apiKey: string): Promise<Repor
   } catch (error) {
     await rm(job.outputPath, { force: true });
     row.latency_s = ((Date.now() - started) / 1000).toFixed(2);
-    row.error = redact(error instanceof Error ? error.message : String(error), apiKey).replace(/\s+/g, " ").slice(0, 1500);
+    const message = error instanceof Error ? error.message : String(error);
+    const statusSuffix = ` (status: ${errorStatus(error, queueStatus)})`;
+    const sanitizedMessage = redact(message, apiKey).replace(/\s+/g, " ");
+    row.error = `${sanitizedMessage.slice(0, Math.max(0, 1500 - statusSuffix.length))}${statusSuffix}`;
     console.error(`  FAILED ${job.photo} / ${job.model.id}: ${row.error}`);
   } finally {
     await rm(rawPath, { force: true });
+    await rm(forwardPath, { force: true });
   }
   return row;
 }
@@ -210,8 +243,12 @@ async function main(): Promise<void> {
     .filter((entry) => entry.isFile() && imageExtensions.has(path.extname(entry.name).toLowerCase()))
     .map((entry) => ({ name: photoId(entry.name), file: entry.name, fullPath: path.join(photosDir, entry.name) }))
     .sort((a, b) => a.file.localeCompare(b.file))
+    .filter((photo) => options.only === undefined || photo.file.toLowerCase().includes(options.only.toLowerCase()))
     .slice(0, options.limit);
-  if (photos.length === 0) throw new Error(`No supported images found in ${photosDir}`);
+  if (photos.length === 0) {
+    const filterDescription = options.only === undefined ? "" : ` matching --only ${options.only}`;
+    throw new Error(`No supported images found${filterDescription} in ${photosDir}`);
+  }
   if (new Set(photos.map((photo) => photo.name)).size !== photos.length) throw new Error("Photo filenames must have unique names without their extensions");
 
   const focusPoints = await readFocusFile(path.join(photosDir, "focus.json"));
@@ -219,9 +256,11 @@ async function main(): Promise<void> {
   const jobs: Job[] = [];
   for (const photo of photos) {
     for (const model of enabledModels) {
-      const variants = [false, ...(options.loop && model.supportsEndFrame ? [true] : [])];
+      const variants = options.loopOnly
+        ? model.supportsEndFrame && !isPingpongPreset(options.preset) ? [true] : []
+        : [false, ...(options.loop && model.supportsEndFrame && !isPingpongPreset(options.preset) ? [true] : [])];
       for (const loop of variants) {
-        const generatedSeconds = model.duration!;
+        const generatedSeconds = presetDurations[options.preset] ?? model.duration!;
         const filename = `${model.id}_${options.preset}${loop ? "_loop" : ""}.mp4`;
         const outputPath = path.join(outDir, photo.name, filename);
         const relativeOutputPath = path.relative(root, outputPath).split(path.sep).join("/");
@@ -239,13 +278,20 @@ async function main(): Promise<void> {
     pendingJobs.push(job);
   }
   const estimate = pendingJobs.reduce((total, job) => total + job.cost, 0);
-  for (const job of pendingJobs) console.log(`${options.dryRun ? "PLAN" : "JOB"} ${job.photo} | ${job.model.id} | ${job.preset}${job.loop ? " | loop" : ""} | ${job.generatedSeconds}s | $${job.cost.toFixed(4)}`);
+  const estimatedSpend = Number(estimate.toFixed(6));
+  for (const job of pendingJobs) {
+    const details = [
+      job.loop ? "end_image_url=same cropped 9:16 start image" : "",
+      isPingpongPreset(job.preset) ? "post-process=pingpong" : "",
+    ].filter(Boolean);
+    console.log(`${options.dryRun ? "PLAN" : "JOB"} ${job.photo} | ${job.model.id} | ${job.preset}${job.loop ? " | loop" : ""} | ${job.generatedSeconds}s | $${job.cost.toFixed(4)}${details.length ? ` | ${details.join(" | ")}` : ""}`);
+  }
   console.log(`Estimated total for ${pendingJobs.length} pending jobs: $${estimate.toFixed(4)}`);
   if (options.dryRun) return;
   if (!options.yes) throw new Error("Real runs require --yes (or use --dry-run)");
   if (!apiKey) throw new Error("FAL_KEY is missing. Add it to tools/pet-benchmark/.env; the key is never printed.");
-  if (options.maxUsd !== undefined && estimate > options.maxUsd) {
-    throw new Error(`Estimated spend $${estimate.toFixed(4)} exceeds --max-usd $${options.maxUsd.toFixed(4)}; no jobs submitted`);
+  if (options.maxUsd !== undefined && estimatedSpend > options.maxUsd) {
+    throw new Error(`Estimated spend $${estimatedSpend.toFixed(4)} exceeds --max-usd $${options.maxUsd.toFixed(4)}; no jobs submitted`);
   }
 
   await verifyFfmpeg();
