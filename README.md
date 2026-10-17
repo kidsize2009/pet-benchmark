@@ -31,6 +31,7 @@ The request fields below are taken from each endpoint's published OpenAPI schema
 | Kling O3 Pro | `image_url`, `prompt`, `duration: "3"`, `generate_audio: false`; loop variant also sets `end_image_url` | 3 s |
 | Happy Horse | `image_url`, `prompt`, `duration: 3`, `resolution: "720p"` | 3 s |
 | Seedance 2.0 | `image_url`, `prompt`, `duration: "4"`, `resolution: "720p"`, `generate_audio: false`, `aspect_ratio: "9:16"`; loop variant also sets `end_image_url` to the same cropped image | 4 s ($0.3024/s; `_s2` presets preserve all 4 s) |
+| Seedance 2.0 480p | Same request fields as Seedance 2.0 with `resolution: "480p"` | 4 s (estimated from 480x854x4x24/1024 tokens at $0.014/1,000 tokens: $0.53802) |
 | Grok Imagine | Disabled. Its schema has `image_url`, `prompt`, integer `duration`, `resolution`, and `aspect_ratio`, but documents no supported duration range. Set a verified duration in `models.ts` before enabling. | Not estimated while disabled |
 
 Kling O3 Standard, Kling O3 Pro, and Happy Horse have no `resolution` or `aspect_ratio` input fields; they receive the 9:16 crop as their start image. Happy Horse has no `generate_audio` or `end_image_url` field, so it has no loop run; any generated audio is discarded from the final clip. `_pp` presets do not request an end frame and instead use the existing pingpong post-process. Failed jobs record the error message and status in the report. All final MP4s have no audio regardless of model support. Prices and durations live in `models.ts`; a failed/blocked request may still incur charges, so report costs are estimates based on requested generation seconds.
@@ -55,7 +56,8 @@ The dry run spends nothing and does not require `FAL_KEY`. Before a real run, co
 Useful options:
 
 ```text
---preset subtle_life|cozy_light|gentle|gentle_pp|breeze|breeze_pp|dreamy|dreamy_pp|cozy|cozy_pp|glance|glance_pp|gentle_v2|breeze_v2|cozy_v2|glance_v2|dreamy_v2|gentle_v3|breeze_v3|cozy_v3|glance_v3|dreamy_v3|breeze_v4|dreamy_v4|breeze_s2|dreamy_s2   Default: subtle_life
+--preset subtle_life|cozy_light|gentle|gentle_pp|breeze|breeze_pp|dreamy|dreamy_pp|cozy|cozy_pp|glance|glance_pp|gentle_v2|breeze_v2|cozy_v2|glance_v2|dreamy_v2|gentle_v3|breeze_v3|cozy_v3|glance_v3|dreamy_v3|breeze_v4|dreamy_v4|breeze_s2|dreamy_s2|sleepy_v1   Default: subtle_life
+--duration SECONDS               Override model and preset durations for this run
 --loop                            Adds same-image end-frame runs where supported
 --loop-only                       With --loop, create only end-frame loop jobs
 --concurrency N                   Default: 3
@@ -69,6 +71,6 @@ Useful options:
 --max-usd X                       Reject a batch whose estimate exceeds X
 ```
 
-Existing output files are skipped. `report.csv` records requested generation seconds and estimated cost, latency, success/error, endpoint SSIM, and output path. `index.html` is a local static gallery; open it in a browser after a run.
+Existing output files are skipped. `report.csv` records requested generation seconds and estimated cost, latency, success/error, first-to-last-frame SSIM, minimum consecutive-frame SSIM, and (for `_v4` presets) minimum SSIM against the first frame. `index.html` is a local static gallery; open it in a browser after a run.
 
 Completed fal responses are saved as JSON in `out/raw/` with their request IDs before the video URL is parsed. If a result was not downloaded, `npm run recover -- <model_id> <request_id> <output.mp4>` fetches the existing queue result without submitting a new generation request.

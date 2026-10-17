@@ -7,15 +7,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { models, type ModelConfig } from "../models.js";
 import { presetDurations, presets, type PresetName } from "../presets.js";
-import { calculateEndpointSsim, calculateSsimBetweenFrames, cropToPortrait, downloadFile, getVideoFrameCount, makeClip, makeThreeSecondClip, readFocusFile, verifyFfmpeg } from "./media.js";
+import { calculateEndpointSsim, calculateMinimumConsecutiveSsim, calculateMinimumSsimToFirstFrame, calculateSsimBetweenFrames, cropToPortrait, downloadFile, getVideoFrameCount, makeClip, makeThreeSecondClip, readFocusFile, verifyFfmpeg } from "./media.js";
 import { extractVideoUrl } from "./fal-result.js";
 import { makePingpong } from "./loopfix.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const reportColumns = ["photo", "model", "preset", "loop", "seconds_generated", "cost_usd", "latency_s", "success", "error", "ssim_first_last", "output_path", "request_id"];
+const reportColumns = ["photo", "model", "preset", "loop", "seconds_generated", "cost_usd", "latency_s", "success", "error", "ssim_first_last", "ssim_min_consecutive", "ssim_min_vs_first", "output_path", "request_id"];
 const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".webp", ".bmp"]);
-type CliOptions = { photos: string; out: string; limit?: number; only?: string; concurrency: number; preset: PresetName; dryRun: boolean; yes: boolean; loop: boolean; loopOnly: boolean; maxUsd?: number; modelIds?: string[] };
-type Job = { photo: string; photoPath: string; model: ModelConfig; preset: PresetName; loop: boolean; generatedSeconds: number; cost: number; outputPath: string; relativeOutputPath: string };
+type CliOptions = { photos: string; out: string; limit?: number; only?: string; concurrency: number; preset: PresetName; duration?: number; dryRun: boolean; yes: boolean; loop: boolean; loopOnly: boolean; maxUsd?: number; modelIds?: string[] };
+type Job = { photo: string; photoPath: string; model: ModelConfig; preset: PresetName; loop: boolean; generatedSeconds: number; preserveDuration: boolean; cost: number; outputPath: string; relativeOutputPath: string };
 type ReportRow = Record<string, string>;
 
 function parseArgs(args: string[]): CliOptions {
@@ -40,13 +40,14 @@ function parseArgs(args: string[]): CliOptions {
       const selected = value();
       if (!(selected in presets)) throw new Error(`Unknown preset ${selected}. Choose: ${Object.keys(presets).join(", ")}`);
       options.preset = selected as PresetName;
-    } else if (arg === "--max-usd") options.maxUsd = nonNegativeNumber(value(), "--max-usd");
+    } else if (arg === "--duration") options.duration = positiveInteger(value(), "--duration");
+    else if (arg === "--max-usd") options.maxUsd = nonNegativeNumber(value(), "--max-usd");
     else if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--yes") options.yes = true;
     else if (arg === "--loop") options.loop = true;
     else if (arg === "--loop-only") options.loopOnly = true;
     else if (arg === "--help" || arg === "-h") {
-      console.log("Usage: npm run benchmark -- [--photos DIR] [--out DIR] [--limit N] [--only TEXT] [--models ID,ID] [--preset NAME] [--loop [--loop-only]] [--concurrency N] [--dry-run | --yes] [--max-usd X]");
+      console.log("Usage: npm run benchmark -- [--photos DIR] [--out DIR] [--limit N] [--only TEXT] [--models ID,ID] [--preset NAME] [--duration SECONDS] [--loop [--loop-only]] [--concurrency N] [--dry-run | --yes] [--max-usd X]");
       process.exit(0);
     } else throw new Error(`Unknown option: ${arg}`);
   }
@@ -65,6 +66,12 @@ function nonNegativeNumber(value: string, option: string): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`${option} must be a non-negative number`);
   return parsed;
+}
+
+function formatEstimate(amount: number): string {
+  return Number(amount.toFixed(4)) === Number(amount.toFixed(5))
+    ? amount.toFixed(4)
+    : amount.toFixed(5);
 }
 
 function photoId(filename: string): string {
@@ -156,6 +163,8 @@ async function runJob(job: Job, imageUrl: string, apiKey: string): Promise<Repor
     success: "false",
     error: "",
     ssim_first_last: "",
+    ssim_min_consecutive: "",
+    ssim_min_vs_first: "",
     output_path: job.relativeOutputPath,
     request_id: "",
   };
@@ -188,7 +197,7 @@ async function runJob(job: Job, imageUrl: string, apiKey: string): Promise<Repor
       await makeThreeSecondClip(rawPath, forwardPath);
       const frameCount = await getVideoFrameCount(forwardPath, 30);
       await makePingpong(forwardPath, job.outputPath, frameCount);
-    } else if (presetDurations[job.preset] !== undefined) {
+    } else if (job.preserveDuration) {
       await makeClip(rawPath, job.outputPath, job.generatedSeconds);
     } else {
       await makeThreeSecondClip(rawPath, job.outputPath);
@@ -197,10 +206,19 @@ async function runJob(job: Job, imageUrl: string, apiKey: string): Promise<Repor
     row.success = "true";
     row.error = "";
     try {
-      const ssim = isPingpongPreset(job.preset) || presetDurations[job.preset] !== undefined
-        ? await calculateSsimBetweenFrames(job.outputPath, 0, "last")
-        : await calculateEndpointSsim(job.outputPath);
-      row.ssim_first_last = ssim === null ? "" : ssim.toFixed(6);
+      const [endpointSsim, minimumConsecutiveSsim, minimumVsFirst] = await Promise.all([
+        isPingpongPreset(job.preset) || job.preserveDuration
+          ? calculateSsimBetweenFrames(job.outputPath, 0, "last")
+          : calculateEndpointSsim(job.outputPath),
+        calculateMinimumConsecutiveSsim(job.outputPath, 30),
+        job.preset.endsWith("_v4")
+          ? calculateMinimumSsimToFirstFrame(job.outputPath, 30)
+          : Promise.resolve(null),
+      ]);
+      row.ssim_first_last = endpointSsim === null ? "" : endpointSsim.toFixed(6);
+      row.ssim_min_consecutive = minimumConsecutiveSsim === null ? "" : minimumConsecutiveSsim.toFixed(6);
+      row.ssim_min_vs_first = minimumVsFirst === null ? "" : minimumVsFirst.toFixed(6);
+      console.log(`  SSIM ${job.photo} / ${job.preset}: min_vs_first=${row.ssim_min_vs_first || "n/a"}, first_last=${row.ssim_first_last || "n/a"}`);
     } catch (error) {
       row.error = `SSIM failed: ${error instanceof Error ? error.message : String(error)}`.replace(/\s+/g, " ").slice(0, 1500);
     }
@@ -260,11 +278,12 @@ async function main(): Promise<void> {
         ? model.supportsEndFrame && !isPingpongPreset(options.preset) ? [true] : []
         : [false, ...(options.loop && model.supportsEndFrame && !isPingpongPreset(options.preset) ? [true] : [])];
       for (const loop of variants) {
-        const generatedSeconds = presetDurations[options.preset] ?? model.duration!;
+        const generatedSeconds = options.duration ?? presetDurations[options.preset] ?? model.duration!;
+        const preserveDuration = options.duration !== undefined || presetDurations[options.preset] !== undefined;
         const filename = `${model.id}_${options.preset}${loop ? "_loop" : ""}.mp4`;
         const outputPath = path.join(outDir, photo.name, filename);
         const relativeOutputPath = path.relative(root, outputPath).split(path.sep).join("/");
-        jobs.push({ photo: photo.name, photoPath: photo.fullPath, model, preset: options.preset, loop, generatedSeconds, cost: generatedSeconds * model.pricePerSecond, outputPath, relativeOutputPath });
+        jobs.push({ photo: photo.name, photoPath: photo.fullPath, model, preset: options.preset, loop, generatedSeconds, preserveDuration, cost: generatedSeconds * model.pricePerSecond, outputPath, relativeOutputPath });
       }
     }
   }
@@ -284,9 +303,9 @@ async function main(): Promise<void> {
       job.loop ? "end_image_url=same cropped 9:16 start image" : "",
       isPingpongPreset(job.preset) ? "post-process=pingpong" : "",
     ].filter(Boolean);
-    console.log(`${options.dryRun ? "PLAN" : "JOB"} ${job.photo} | ${job.model.id} | ${job.preset}${job.loop ? " | loop" : ""} | ${job.generatedSeconds}s | $${job.cost.toFixed(4)}${details.length ? ` | ${details.join(" | ")}` : ""}`);
+    console.log(`${options.dryRun ? "PLAN" : "JOB"} ${job.photo} | ${job.model.id} | ${job.preset}${job.loop ? " | loop" : ""} | ${job.generatedSeconds}s | $${formatEstimate(job.cost)}${details.length ? ` | ${details.join(" | ")}` : ""}`);
   }
-  console.log(`Estimated total for ${pendingJobs.length} pending jobs: $${estimate.toFixed(4)}`);
+  console.log(`Estimated total for ${pendingJobs.length} pending jobs: $${formatEstimate(estimate)}`);
   if (options.dryRun) return;
   if (!options.yes) throw new Error("Real runs require --yes (or use --dry-run)");
   if (!apiKey) throw new Error("FAL_KEY is missing. Add it to tools/pet-benchmark/.env; the key is never printed.");
@@ -325,7 +344,7 @@ async function main(): Promise<void> {
         const upload = await uploadPromise;
         if (upload.error) console.error(`  FAILED ${job.photo} / ${job.model.id}: ${redact(upload.error, apiKey)}`);
         const row = upload.error
-          ? { photo: job.photo, model: job.model.id, preset: job.preset, loop: String(job.loop), seconds_generated: String(job.generatedSeconds), cost_usd: job.cost.toFixed(6), latency_s: "0", success: "false", error: redact(upload.error, apiKey).slice(0, 1500), ssim_first_last: "", output_path: job.relativeOutputPath, request_id: "" }
+          ? { photo: job.photo, model: job.model.id, preset: job.preset, loop: String(job.loop), seconds_generated: String(job.generatedSeconds), cost_usd: job.cost.toFixed(6), latency_s: "0", success: "false", error: redact(upload.error, apiKey).slice(0, 1500), ssim_first_last: "", ssim_min_consecutive: "", ssim_min_vs_first: "", output_path: job.relativeOutputPath, request_id: "" }
           : await runJob(job, upload.imageUrl!, apiKey);
         reportMap.set(jobKey(row), row);
         reportWrite = reportWrite.then(() => writeFile(path.join(outDir, "report.csv"), csvEscapeRows([...reportMap.values()]), "utf8"));

@@ -146,6 +146,27 @@ export async function calculateAverageConsecutiveSsim(videoPath: string, frameRa
   return matches.length ? Number(matches.at(-1)![1]) : null;
 }
 
+export async function calculateMinimumConsecutiveSsim(videoPath: string, frameRate: number): Promise<number | null> {
+  const frameCount = await getVideoFrameCount(videoPath, frameRate);
+  if (frameCount < 2) return null;
+  const normalize = `fps=${frameRate},scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:-1:-1,setsar=1,format=yuv420p,settb=AVTB`;
+  const graph = `[0:v]${normalize},split=2[early][late];[early]trim=end_frame=${frameCount - 1},setpts=PTS-STARTPTS[first];[late]trim=start_frame=1,setpts=PTS-STARTPTS[second];[first][second]ssim`;
+  const output = await runFfmpeg(["-i", videoPath, "-filter_complex", graph, "-f", "null", "-"]);
+  const values = [...output.matchAll(/All:([0-9.]+)/g)].map((match) => Number(match[1]));
+  return values.length ? Math.min(...values) : null;
+}
+
+export async function calculateMinimumSsimToFirstFrame(videoPath: string, frameRate: number): Promise<number | null> {
+  const frameCount = await getVideoFrameCount(videoPath, frameRate);
+  if (frameCount < 2) return null;
+  const normalize = `fps=${frameRate},scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:-1:-1,setsar=1,format=yuv420p,settb=AVTB`;
+  const comparisonCount = frameCount - 1;
+  const graph = `[0:v]${normalize},split=2[referenceSrc][framesSrc];[referenceSrc]trim=end_frame=1,setpts=PTS-STARTPTS,loop=loop=${comparisonCount - 1}:size=1:start=0,setpts=N/(${frameRate}*TB),trim=end_frame=${comparisonCount}[reference];[framesSrc]trim=start_frame=1:end_frame=${frameCount},setpts=PTS-STARTPTS[comparison];[reference][comparison]ssim`;
+  const output = await runFfmpeg(["-i", videoPath, "-filter_complex", graph, "-f", "null", "-"]);
+  const values = [...output.matchAll(/All:([0-9.]+)/g)].map((match) => Number(match[1]));
+  return values.length ? Math.min(...values) : null;
+}
+
 export async function calculateEndpointSsim(videoPath: string): Promise<number | null> {
   return calculateSsimBetweenFrames(videoPath, 0, 89);
 }
