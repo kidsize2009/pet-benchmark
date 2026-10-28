@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "petmotion-benchmark",
   "private": true,
   "type": "module",
@@ -12,7 +12,8 @@
     "parallax:normalize": "tsx src/parallaxNormalize.ts",
     "parallax:compare": "tsx src/parallaxCompare.ts",
     "typecheck": "tsc --noEmit",
-    "sample-pets": "tsx src/samplePets.ts"
+    "sample-pets": "tsx src/samplePets.ts",
+    "sample-clips": "tsx src/sampleClips.ts"
   },
   "dependencies": {
     "@fal-ai/client": "^1.6.2",
