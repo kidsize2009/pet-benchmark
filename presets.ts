@@ -43,6 +43,8 @@ export const presets = {
   dreamy_v4: "The golden lights in the background twinkle and slowly drift. The dog turns its head slightly toward the lights and blinks once.",
   breeze_s2: "A strong gust of wind blows across the hill: the dog's fur and ears ripple sideways, the grass sways in waves, the dog squints and blinks, then the wind calms.",
   dreamy_s2: "The string lights in the background twinkle and softly shimmer. The dog slowly turns its head toward the lights, blinks once, then looks back at the camera.",
+  renaissance_a: "A classic oil painting portrait that gently comes to life. The pet's eyes glance to the side as if checking that nobody is watching, one ear twitches slightly, then it looks back at the viewer and blinks slowly once. The image stays a painting: visible brush strokes, oil texture and craquelure remain, the pet and costume stay exactly the same. Very soft candlelight flicker. Locked camera, ends in exactly the original pose. No photorealism, no morphing, no new objects.",
+  cozy_s1: "The dog lies calmly and breathes slowly and deeply: the chest and shoulders visibly rise and fall, the head sinks slightly onto the paws and lifts again, the ears move a little, one slow long blink, then it settles back into exactly the original pose. Locked camera, natural lifelike movement.",
 } as const;
 
 export type PresetName = keyof typeof presets;

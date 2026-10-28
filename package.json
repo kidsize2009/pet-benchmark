@@ -1,11 +1,16 @@
-{
+﻿{
   "name": "petmotion-benchmark",
   "private": true,
   "type": "module",
   "scripts": {
     "benchmark": "tsx src/index.ts",
+    "bench3": "tsx src/bench3.ts",
+    "bench5": "tsx src/bench5.ts",
     "recover": "tsx src/recover.ts",
     "loopfix": "tsx src/loopfix.ts",
+    "parallax:depth": "tsx src/parallaxDepth.ts",
+    "parallax:normalize": "tsx src/parallaxNormalize.ts",
+    "parallax:compare": "tsx src/parallaxCompare.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
