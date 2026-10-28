@@ -11,7 +11,8 @@
     "parallax:depth": "tsx src/parallaxDepth.ts",
     "parallax:normalize": "tsx src/parallaxNormalize.ts",
     "parallax:compare": "tsx src/parallaxCompare.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "sample-pets": "tsx src/samplePets.ts"
   },
   "dependencies": {
     "@fal-ai/client": "^1.6.2",
