@@ -6,7 +6,8 @@
     "benchmark": "tsx src/index.ts",
     "recover": "tsx src/recover.ts",
     "loopfix": "tsx src/loopfix.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "sample-pets": "tsx src/samplePets.ts"
   },
   "dependencies": {
     "@fal-ai/client": "^1.6.2",
