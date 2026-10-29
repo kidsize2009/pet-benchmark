@@ -13,7 +13,8 @@
     "parallax:compare": "tsx src/parallaxCompare.ts",
     "typecheck": "tsc --noEmit",
     "sample-pets": "tsx src/samplePets.ts",
-    "sample-clips": "tsx src/sampleClips.ts"
+    "sample-clips": "tsx src/sampleClips.ts",
+    "duration-test": "tsx src/durationTest.ts"
   },
   "dependencies": {
     "@fal-ai/client": "^1.6.2",
